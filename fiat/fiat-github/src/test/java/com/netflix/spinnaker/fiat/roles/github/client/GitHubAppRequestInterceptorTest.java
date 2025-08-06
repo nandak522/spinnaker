@@ -57,7 +57,7 @@ class GitHubAppRequestInterceptorTest {
     // Given
     IOException authException = new IOException("Failed to get installation token");
     when(mockAuthService.getInstallationToken()).thenThrow(authException);
-    when(mockChain.request()).thenReturn(mockRequest);
+    lenient().when(mockChain.request()).thenReturn(mockRequest);
 
     // When & Then
     IOException exception =
@@ -78,7 +78,7 @@ class GitHubAppRequestInterceptorTest {
     // Given
     RuntimeException authException = new RuntimeException("Configuration error");
     when(mockAuthService.getInstallationToken()).thenThrow(authException);
-    when(mockChain.request()).thenReturn(mockRequest);
+    lenient().when(mockChain.request()).thenReturn(mockRequest);
 
     // When & Then
     IOException exception =

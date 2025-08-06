@@ -2,6 +2,8 @@ package com.netflix.spinnaker.fiat.config;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.AdditionalMatchers.not;
+import static org.mockito.Mockito.times;
 
 import com.netflix.spinnaker.config.OkHttp3ClientConfiguration;
 import com.netflix.spinnaker.fiat.roles.github.GitHubProperties;
@@ -54,10 +56,10 @@ class GitHubConfigTest {
     tempPrivateKeyFile = tempDir.resolve("test-private-key.pem");
     Files.write(tempPrivateKeyFile, pemKey.getBytes());
 
-    // Mock OkHttpClient configuration
-    when(mockOkHttpClientConfig.createForRetrofit2()).thenReturn(mockClientBuilder);
-    when(mockClientBuilder.addInterceptor(any(Interceptor.class))).thenReturn(mockClientBuilder);
-    when(mockClientBuilder.build()).thenReturn(mockClient);
+    // Mock OkHttpClient configuration - using lenient() since not all tests use these
+    lenient().when(mockOkHttpClientConfig.createForRetrofit2()).thenReturn(mockClientBuilder);
+    lenient().when(mockClientBuilder.addInterceptor(any(Interceptor.class))).thenReturn(mockClientBuilder);
+    lenient().when(mockClientBuilder.build()).thenReturn(mockClient);
   }
 
   @Test
@@ -106,7 +108,7 @@ class GitHubConfigTest {
     // Then
     assertNotNull(client);
     verify(mockClientBuilder).addInterceptor(any(GitHubAppRequestInterceptor.class));
-    verify(mockClientBuilder).build();
+    verify(mockClientBuilder, times(2)).build(); // Called twice: once for GitHubAppAuthService, once for Retrofit client
   }
 
   @Test
