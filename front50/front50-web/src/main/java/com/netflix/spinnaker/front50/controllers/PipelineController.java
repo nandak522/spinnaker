@@ -43,6 +43,8 @@ import com.netflix.spinnaker.kork.web.exceptions.ValidationException;
 import com.netflix.spinnaker.security.AuthenticatedRequest;
 import java.util.ArrayList;
 import java.util.Arrays;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.client.RestTemplate;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -84,6 +86,9 @@ public class PipelineController {
   private final PipelineControllerConfig pipelineControllerConfig;
   private final FiatPermissionEvaluator fiatPermissionEvaluator;
   private final AuthorizationSupport authorizationSupport;
+
+  @Autowired(required = false)
+  private RestTemplate restTemplate;
 
   public PipelineController(
       PipelineDAO pipelineDAO,
@@ -293,10 +298,11 @@ public class PipelineController {
     return pipelineDAO.getPipelineByName(application, name, refresh);
   }
 
-  @PreAuthorize(
-      "@fiatPermissionEvaluator.storeWholePermission() "
-          + "and hasPermission(#pipeline.application, 'APPLICATION', 'WRITE') "
-          + "and @authorizationSupport.hasRunAsUserPermission(#pipeline)")
+  // @PreAuthorize(
+  //     "@fiatPermissionEvaluator.storeWholePermission() "
+  //         + "and hasPermission(#pipeline.application, 'APPLICATION', 'WRITE') "
+  //         + "and @authorizationSupport.hasRunAsUserPermission(#pipeline)")
+  @PreAuthorize("@fiatPermissionEvaluator.storeWholePermission() and @authorizationSupport.hasRunAsUserPermission(#pipeline)")
   @RequestMapping(value = "", method = RequestMethod.POST)
   public synchronized Pipeline save(
       @RequestBody Pipeline pipeline,
@@ -308,6 +314,10 @@ public class PipelineController {
         "Received request to save pipeline {} in application {}",
         pipeline.getName(),
         pipeline.getApplication());
+
+
+    // Perform permission check based on create vs update
+    checkPipelinePermissions(pipeline);
 
     log.debug("Running validation before saving pipeline {}", pipeline.getName());
     long validationStartTime = System.currentTimeMillis();
@@ -326,6 +336,47 @@ public class PipelineController {
         savedPipeline.getApplication(),
         System.currentTimeMillis() - saveStartTime);
     return savedPipeline;
+  }
+
+  /**
+   * Checks permissions for pipeline save operation.
+   * New pipelines require CREATE permission, existing pipelines require WRITE permission.
+   */
+  private void checkPipelinePermissions(Pipeline pipeline) {
+    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+    boolean isExistingPipeline = isExistingPipeline(pipeline);
+
+    if (isExistingPipeline) {
+      // Existing pipeline - check WRITE permission
+      if (!fiatPermissionEvaluator.hasPermission(auth, pipeline.getApplication(), "APPLICATION", "WRITE")) {
+        throw new ValidationException(
+            String.format("Insufficient WRITE permissions for application %s", pipeline.getApplication()),
+            Collections.emptyList());
+      }
+    } else {
+      // New pipeline - check CREATE permission via Fiat endpoint (same as applications)
+      String user = AuthenticatedRequest.getSpinnakerUser().orElse("anonymous");
+      if (!hasCreatePermission(user, pipeline.getApplication())) {
+        throw new ValidationException(
+            String.format("Insufficient CREATE permissions for application %s", pipeline.getApplication()),
+            Collections.emptyList());
+      }
+    }
+  }
+
+  private boolean isExistingPipeline(Pipeline pipeline) {
+    if (pipeline.getId() == null) return false;
+    try {
+      return pipelineDAO.findById(pipeline.getId()) != null;
+    } catch (NotFoundException e) {
+      return false;
+    }
+  }
+
+  private boolean hasCreatePermission(String user, String application) {
+    // Delegate to Fiat's authorize endpoint for CREATE permission check
+    // This ensures consistency with application creation permission logic
+    return fiatPermissionEvaluator.canCreate(user, application, "application");
   }
 
   @PreAuthorize("@fiatPermissionEvaluator.storeWholePermission()")

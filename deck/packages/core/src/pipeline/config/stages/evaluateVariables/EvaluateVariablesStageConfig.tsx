@@ -49,7 +49,7 @@ export function validateEvaluateVariablesStage(stage: IStage) {
   formValidator.field('variables').withValidators(
     formValidator.arrayForEach((item) => {
       item.field('key', 'Variable Name').required().withValidators(variableNameValidator, duplicateKeyValidator);
-      item.field('value', 'Expression').required();
+      item.field('value', 'Expression').required().spelAware();
     }),
   );
   return formValidator.validateForm();

@@ -449,4 +449,182 @@ class PipelineControllerSpec extends Specification {
     }
   }
 
+  // ===========================================
+  // INTEGRATION TESTS FOR PERMISSION FIX
+  // ===========================================
+
+  @Unroll
+  def "POST /pipelines - Admin user should be able to create new pipelines (AFTER fix)"() {
+    given: "Admin user with CREATE permission"
+    def pipeline = [
+      name: "admin-new-pipeline",
+      application: "testapp",
+      stages: []
+    ]
+
+    and: "Mock admin permissions"
+    _ * fiatPermissionEvaluator.storeWholePermission() >> true
+    _ * authorizationSupport.hasRunAsUserPermission(_) >> true
+    _ * fiatPermissionEvaluator.canCreate("admin-user", "testapp", "application") >> true
+
+    and: "Mock pipeline creation"
+    1 * pipelineDAO.create(_, _) >> { id, p ->
+      p.setId(id ?: UUID.randomUUID().toString())
+      return p
+    }
+
+    when:
+    def result = mockMvc.perform(post("/pipelines")
+      .header("X-SPINNAKER-USER", "admin-user")
+      .contentType(MediaType.APPLICATION_JSON)
+      .content(new ObjectMapper().writeValueAsString(pipeline)))
+
+    then:
+    result.andExpect(status().isOk())
+  }
+
+  @Unroll
+  def "POST /pipelines - Regular user should NOT be able to create new pipelines (AFTER fix)"() {
+    given: "Regular user with only WRITE permission (no CREATE)"
+    def pipeline = [
+      name: "regular-new-pipeline",
+      application: "testapp",
+      stages: []
+    ]
+
+    and: "Mock regular user permissions"
+    _ * fiatPermissionEvaluator.storeWholePermission() >> true
+    _ * authorizationSupport.hasRunAsUserPermission(_) >> true
+    _ * fiatPermissionEvaluator.canCreate("regular-user", "testapp", "application") >> false
+
+    when:
+    def result = mockMvc.perform(post("/pipelines")
+      .header("X-SPINNAKER-USER", "regular-user")
+      .contentType(MediaType.APPLICATION_JSON)
+      .content(new ObjectMapper().writeValueAsString(pipeline)))
+
+    then:
+    result.andExpect(status().isBadRequest())
+    // Should contain CREATE permission error message
+  }
+
+  @Unroll
+  def "PUT /pipelines - Regular user should be able to update existing pipelines (AFTER fix)"() {
+    given: "Existing pipeline"
+    def existingPipeline = new Pipeline([
+      id: "existing-id",
+      name: "existing-pipeline",
+      application: "testapp",
+      stages: []
+    ])
+
+    def updatedPipeline = [
+      id: "existing-id",
+      name: "updated-pipeline",
+      application: "testapp",
+      stages: []
+    ]
+
+    and: "Mock existing pipeline lookup"
+    1 * pipelineDAO.findById("existing-id") >> existingPipeline
+
+    and: "Mock regular user WRITE permissions"
+    _ * fiatPermissionEvaluator.hasPermission(_, "testapp", "APPLICATION", "WRITE") >> true
+
+    and: "Mock pipeline update"
+    1 * pipelineDAO.update("existing-id", _) >> { id, p -> return p }
+
+    when:
+    def result = mockMvc.perform(put("/pipelines/existing-id")
+      .header("X-SPINNAKER-USER", "regular-user")
+      .contentType(MediaType.APPLICATION_JSON)
+      .content(new ObjectMapper().writeValueAsString(updatedPipeline)))
+
+    then:
+    result.andExpected(status().isOk())
+  }
+
+  // ===========================================
+  // BEFORE/AFTER COMPARISON TESTS
+  // ===========================================
+
+  def "BEFORE fix: Regular user could create pipelines with just WRITE permission"() {
+    given: "Simulate BEFORE fix behavior (only WRITE permission check)"
+    def pipeline = [
+      name: "bypass-pipeline",
+      application: "testapp",
+      stages: []
+    ]
+
+    and: "Mock the OLD permission logic (WRITE-only check)"
+    def oldController = new PipelineController(
+      pipelineDAO, new ObjectMapper(), Optional.empty(), [], Optional.empty(),
+      pipelineControllerConfig, fiatPermissionEvaluator, authorizationSupport
+    ) {
+      // Override to simulate OLD behavior (just WRITE check)
+      @Override
+      void checkPipelinePermissions(Pipeline p) {
+        if (!fiatPermissionEvaluator.hasPermission(authentication, p.getApplication(), "APPLICATION", "WRITE")) {
+          throw new ValidationException("Insufficient WRITE permissions", [])
+        }
+      }
+    }
+
+    and: "Regular user has WRITE but not CREATE permission"
+    _ * fiatPermissionEvaluator.hasPermission(_, "testapp", "APPLICATION", "WRITE") >> true
+    _ * fiatPermissionEvaluator.canCreate("regular-user", "testapp", "application") >> false
+
+    when: "Using OLD controller logic"
+    // This would have succeeded before the fix
+    oldController.checkPipelinePermissions(new Pipeline(pipeline))
+
+    then: "Should succeed (this was the security bug)"
+    noExceptionThrown()
+
+    when: "Using NEW controller logic"
+    controller.checkPipelinePermissions(new Pipeline(pipeline))
+
+    then: "Should fail with CREATE permission error (this is the fix)"
+    def ex = thrown(ValidationException)
+    ex.message.contains("Insufficient CREATE permissions")
+  }
+
+  // ===========================================
+  // BATCH OPERATION TESTS
+  // ===========================================
+
+  def "batchUpdate should enforce CREATE permissions for new pipelines in batch"() {
+    given: "Mixed batch with new and existing pipelines"
+    def pipelinesBatch = [
+      [
+        // New pipeline (no ID)
+        name: "batch-new-pipeline",
+        application: "testapp",
+        stages: []
+      ],
+      [
+        // Existing pipeline
+        id: "existing-id",
+        name: "batch-existing-pipeline",
+        application: "testapp",
+        stages: []
+      ]
+    ]
+
+    and: "Mock existing pipeline lookup"
+    1 * pipelineDAO.findById("existing-id") >> new Pipeline([id: "existing-id"])
+
+    and: "Regular user permissions"
+    _ * fiatPermissionEvaluator.hasPermission(_, "testapp", "APPLICATION", "WRITE") >> true
+    _ * fiatPermissionEvaluator.canCreate("regular-user", "testapp", "application") >> false
+
+    when:
+    def result = controller.batchUpdate(pipelinesBatch, false)
+
+    then:
+    result.failed_pipelines_count == 1 // New pipeline should fail
+    result.successful_pipelines_count == 1 // Existing pipeline should succeed
+    result.failed_pipelines[0].errorMsg.contains("CREATE permissions")
+  }
+
 }
